@@ -1,218 +1,278 @@
 import java.awt.*;
 import java.awt.event.*;
-import java.util.ArrayList;
-import java.util.Random;
+import java.awt.geom.AffineTransform;
+import java.util.*;
 import javax.swing.*;
+import javax.sound.sampled.*;
 
-public class FlappyBird extends JPanel implements ActionListener,
-KeyListener {
-int boardWidth = 360;
-intboardHeight = 640;
+public class FlappyBird extends JPanel implements ActionListener, KeyListener {
 
-//images
-Image backgroundImg;
-Image birdImg;
-Image topPipeImg;
-Image bottomPipeImg;
+    enum GameState { MENU, RUNNING, GAMEOVER }
+    public GameState state = GameState.MENU;
 
-//bird class
-int birdX = boardWidth/8; 
-int birdY = boardWidth/2;
-int birdWidth = 34;
-int birdHeight = 24;
+    int boardWidth = 360, boardHeight = 640;
 
-class Bird
-{ int x = birdX;
-int y = birdY;
-int width = birdWidth;
-int height = birdHeight;
-Image img;
-Bird(Imageimg)
-{ this.img = img;
-}
-}
+    // Background
+    Image sky, clouds, ground;
+    float cloudX = 0, groundX = 0;
+    float cloudSpeed = 0.2f;
+    float groundSpeed = -4f;
 
-//pipe class
-intpipeX= boardWidth;
-int pipeY = 0;
-intpipeWidth= 64; //scaledby 1/6
-int pipeHeight = 512;
+    // Bird
+    Image[] birdFrames;
+    int birdFrame = 0;
+    int birdX = boardWidth / 4, birdY = boardHeight / 2;
+    int birdWidth = 34, birdHeight = 24;
+    float velocityY = 0, gravity = 0.5f, jumpStrength = -8f;
+    float birdAngle = 0;
 
-class Pipe
-{ intx= pipeX;
-int y= pipeY;
-int width = pipeWidth;
+    // Pipes
+    int pipeWidth = 64, pipeHeight = 512, pipeGap = 150;
+    float pipeSpeed = -4f;
+    ArrayList<Pipe> pipes = new ArrayList<>();
+    Random random = new Random();
 
-intheight=pipeHeight;
-Image img;
-boolean passed = false;
+    // Particles
+    ArrayList<Particle> particles = new ArrayList<>();
 
-Pipe(Imageimg)
-{ this.img = img;
-}
-}
+    // Score
+    int score = 0, highScore = 0;
 
-//game logic
-Bird bird;
-int velocityX = -4; //move pipes to the left speed (simulates bird moving right)
-int velocityY = 0; //move bird up/down speed.
-int gravity = 1;
+    // Timers (explicitly javax.swing.Timer to avoid ambiguity)
+    javax.swing.Timer gameLoop;
+    javax.swing.Timer pipeSpawner;
+    javax.swing.Timer birdAnimator;
+    javax.swing.Timer particleTimer;
 
-ArrayList<Pipe> pipes;
-Random random = new Random();
+    // Sounds
+    Clip jumpSound, hitSound, scoreSound;
 
-Timer gameLoop;
-TimerplacePipeTimer;
-boolean gameOver = false;
-double score = 0;
-FlappyBird() {
-setPreferredSize(new Dimension(boardWidth, boardHeight));
-// setBackground(Color.blue);
-setFocusable(true);
-addKeyListener(this);
+    class Pipe {
+        float x, y;
+        boolean passed = false;
+        Pipe(float x, float y) { this.x = x; this.y = y; }
+    }
 
-//load images backgroundImg = new
-ImageIcon(getClass().getResource("./flappybirdbg.png")).getImage();
-birdImg = new
-ImageIcon(getClass().getResource("./flappybird.png")).getImage();
-topPipeImg = new
-ImageIcon(getClass().getResource("./toppipe.png")).getImage();
-bottomPipeImg = new
-ImageIcon(getClass().getResource("./bottompipe.png")).getImage();
+    class Particle {
+        float x, y, alpha = 1f, size;
+        Particle(float x, float y, float size) { this.x = x; this.y = y; this.size = size; }
+        void update() { y += 1; alpha -= 0.03f; if(alpha < 0) alpha = 0; }
+        boolean isDead() { return alpha <= 0; }
+    }
 
-//bird
-bird = new Bird(birdImg);
-pipes= new ArrayList<Pipe>();
+    public FlappyBird() {
+        setPreferredSize(new Dimension(boardWidth, boardHeight));
+        setFocusable(true);
+        addKeyListener(this);
 
-//place pipes timer
-placePipeTimer = new Timer(1500, new ActionListener()
-{ @Override
-public void actionPerformed(ActionEvent e) {
-// Codetobeexecuted
-placePipes();
-}
-});
-placePipeTimer.start();
+        loadResources();
 
-//game timer
-gameLoop = new Timer(1000/60, this); //how long it takes to start
-timer,milliseconds gone between frames
-gameLoop.start();
-}
-void placePipes() {
-//(0-1) * pipeHeight/2.
-// 0 -> -128 (pipeHeight/4)
-// 1 -> -128 - 256 (pipeHeight/4 - pipeHeight/2) = -3/4 pipeHeight
-int randomPipeY = (int) (pipeY - pipeHeight/4 - Math.random()*(pipeHeight/2));
-int openingSpace = boardHeight/4;
+        // Timers
+        gameLoop = new javax.swing.Timer(1000/60, this);
+        pipeSpawner = new javax.swing.Timer(1500, e -> spawnPipe());
+        birdAnimator = new javax.swing.Timer(150, e -> { birdFrame = (birdFrame + 1) % birdFrames.length; repaint(); });
+        particleTimer = new javax.swing.Timer(30, e -> updateParticles());
 
-PipetopPipe = new Pipe(topPipeImg);
-topPipe.y = randomPipeY;
-pipes.add(topPipe);
+        // Start timers
+        gameLoop.start();
+        pipeSpawner.start();
+        birdAnimator.start();
+        particleTimer.start();
+    }
 
-Pipe bottomPipe = new Pipe(bottomPipeImg);
-bottomPipe.y = topPipe.y + pipeHeight + openingSpace;
-pipes.add(bottomPipe);
-}
+    void loadResources() {
+        try {
+            // Make sure resources are in src/resources/images/
+            sky = new ImageIcon(getClass().getResource("/resources/images/sky.png")).getImage();
+            clouds = new ImageIcon(getClass().getResource("/resources/images/clouds.png")).getImage();
+            ground = new ImageIcon(getClass().getResource("/resources/images/ground.png")).getImage();
 
-public void paintComponent(Graphics g)
-{ super.paintComponent(g);
-draw(g);
-}
+            birdFrames = new Image[3];
+            birdFrames[0] = new ImageIcon(getClass().getResource("/resources/images/bird1.png")).getImage();
+            birdFrames[1] = new ImageIcon(getClass().getResource("/resources/images/bird2.png")).getImage();
+            birdFrames[2] = new ImageIcon(getClass().getResource("/resources/images/bird3.png")).getImage();
 
-public void draw(Graphics g) {
-//background
-g.drawImage(backgroundImg, 0, 0, this.boardWidth, this.boardHeight, null);
+            // Sounds
+            jumpSound = AudioSystem.getClip();
+            jumpSound.open(AudioSystem.getAudioInputStream(getClass().getResource("/resources/sounds/jump.wav")));
+            hitSound = AudioSystem.getClip();
+            hitSound.open(AudioSystem.getAudioInputStream(getClass().getResource("/resources/sounds/hit.wav")));
+            scoreSound = AudioSystem.getClip();
+            scoreSound.open(AudioSystem.getAudioInputStream(getClass().getResource("/resources/sounds/score.wav")));
+        } catch(Exception e) {
+            e.printStackTrace();
+        }
+    }
 
-//bird
-g.drawImage(birdImg, bird.x, bird.y, bird.width, bird.height, null);
+    void spawnPipe() {
+        if(state != GameState.RUNNING) return;
+        float y = -random.nextInt(200) - 100;
+        pipes.add(new Pipe(boardWidth, y));
+    }
 
-//pipes
-for (int i = 0; i < pipes.size(); i++)
-{ Pipe = pipes.get(i);
-g.drawImage(pipe.img, pipe.x, pipe.y, pipe.width, pipe.height, null);
-}
+    void addParticles(float x, float y) {
+        for(int i = 0; i < 10; i++) {
+            particles.add(new Particle(x + random.nextInt(20) - 10, y + random.nextInt(20) - 10, random.nextInt(4) + 2));
+        }
+    }
 
-//score
-g.setColor(Color.black);
+    void updateParticles() {
+        for(Iterator<Particle> it = particles.iterator(); it.hasNext();) {
+            Particle p = it.next();
+            p.update();
+            if(p.isDead()) it.remove();
+        }
+    }
 
-g.setFont(new Font("ROGFonts", Font.BOLD, 42));
-if (gameOver) {
+    void playSound(Clip clip) {
+        if(clip != null) { clip.setFramePosition(0); clip.start(); }
+    }
 
-g.drawString("Game Over: " + String.valueOf((int) score), 10, 35);
-}
-else {
-g.drawString(String.valueOf((int) score), 10, 35);
-}
+    void updateGame() {
+        velocityY += gravity;
+        birdY += velocityY;
+        birdAngle = Math.min(velocityY * 3, 45);
+        if(velocityY < 0) birdAngle = -25;
+        if(birdY < 0) birdY = 0;
+        if(birdY + birdHeight > boardHeight - 50) {
+            state = GameState.GAMEOVER;
+            playSound(hitSound);
+            addParticles(birdX, birdY + birdHeight/2);
+        }
 
-}
+        cloudX += cloudSpeed;
+        if(cloudX > boardWidth) cloudX = 0;
+        groundX += groundSpeed;
+        if(groundX <= -boardWidth) groundX = 0;
 
-public void move() {
-//bird
-velocityY += gravity;
-bird.y += velocityY;
-bird.y = Math.max(bird.y, 0); //apply gravity to current bird.y, limit the bird.y to top of the canvas
-//pipes
-for (int i = 0; i < pipes.size(); i++)
-{ Pipe = pipes.get(i);
-pipe.x += velocityX;
+        ArrayList<Pipe> remove = new ArrayList<>();
+        Rectangle birdRect = new Rectangle(birdX, birdY, birdWidth, birdHeight);
+        for(Pipe p : pipes) {
+            p.x += pipeSpeed;
+            Rectangle topPipe = new Rectangle((int)p.x, (int)p.y, pipeWidth, pipeHeight);
+            Rectangle bottomPipe = new Rectangle((int)p.x, (int)p.y + pipeHeight + pipeGap, pipeWidth, pipeHeight);
 
-if (!pipe.passed CC bird.x > pipe.x + pipe.width) {
-score += 0.5; //0.5 because there are 2 pipes! so 0.5*2 = 1, 1 for each set of pipes
-pipe.passed = true;
-}
+            if(!p.passed && p.x + pipeWidth < birdX) {
+                score++;
+                p.passed = true;
+                playSound(scoreSound);
+            }
 
-if (collision(bird, pipe))
-{ gameOver = true;
-}
-}
+            if(birdRect.intersects(topPipe) || birdRect.intersects(bottomPipe)) {
+                state = GameState.GAMEOVER;
+                playSound(hitSound);
+                addParticles(birdX, birdY + birdHeight/2);
+            }
 
-if (bird.y > boardHeight) {
+            if(p.x + pipeWidth < 0) remove.add(p);
+        }
+        pipes.removeAll(remove);
+        if(score > highScore) highScore = score;
+    }
 
-gameOver = true;
-}
-}
+    @Override
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
+        Graphics2D g2d = (Graphics2D) g;
 
-boolean collision(Bird a, Pipe b) {
-return a.x < b.x + b.width CC //a's topleft corner doesn't reach b's top right corner
-a.x + a.width > b.x CC //a's top right corner passes b's topleft corner
-a.y < b.y + b.height CC //a's top left corner doesn't reach b's bottom left corner
-a.y + a.height > b.y;	//a's bottom left corner passes b's top left corner
-}
+        if(sky != null) g2d.drawImage(sky, 0, 0, boardWidth, boardHeight, null);
+        else { g2d.setColor(Color.cyan); g2d.fillRect(0,0,boardWidth,boardHeight); }
 
-@Override
-public void actionPerformed(ActionEvent e) { //called every x milliseconds by gameLoop timer
+        if(clouds != null){
+            g2d.drawImage(clouds, (int)-cloudX, 50, boardWidth, 100, null);
+            g2d.drawImage(clouds, (int)(-cloudX + boardWidth), 50, boardWidth, 100, null);
+        }
 
-move();
-repaint();
-if (gameOver)
-{ placePipeTimer.stop();
-gameLoop.stop();
-}
-}
+        g2d.setColor(Color.green);
+        for(Pipe p : pipes){
+            g2d.fillRect((int)p.x,(int)p.y,pipeWidth,pipeHeight);
+            g2d.fillRect((int)p.x,(int)p.y + pipeHeight + pipeGap,pipeWidth,pipeHeight);
+        }
 
-@Override
-public void keyPressed(KeyEvent e) {
-if (e.getKeyCode() == KeyEvent.VK_SPACE) {
-// System.out.println("JUMP!");
-velocityY = -9;
-if (gameOver) {
-//restartgamebyresettingconditions
-bird.y = birdY;
-velocityY = 0;
-pipes.clear();
-gameOver = false;
-score = 0;
-gameLoop.start();
-placePipeTimer.start();
-}
-}
-}
+        if(ground != null){
+            g2d.drawImage(ground, (int)groundX, boardHeight-50, boardWidth, 50, null);
+            g2d.drawImage(ground, (int)(groundX + boardWidth), boardHeight-50, boardWidth, 50, null);
+        }
 
-//not needed
-@Override
-public void keyTyped(KeyEvent e) {}
+        for(Particle p : particles){
+            g2d.setColor(new Color(255,255,255,(int)(p.alpha*255)));
+            g2d.fillOval((int)p.x,(int)p.y,(int)p.size,(int)p.size);
+        }
 
-@Override
-public void keyReleased(KeyEvent e) {}
+        AffineTransform old = g2d.getTransform();
+        g2d.rotate(Math.toRadians(birdAngle), birdX + birdWidth/2, birdY + birdHeight/2);
+        if(birdFrames != null && birdFrames[0] != null)
+            g2d.drawImage(birdFrames[birdFrame], birdX, birdY, birdWidth, birdHeight, null);
+        else {
+            System.out.println("Bird image not loaded!");
+            g2d.setColor(Color.red);
+            g2d.fillRect(birdX, birdY, birdWidth, birdHeight);
+        }
+        g2d.setTransform(old);
+
+        g2d.setColor(Color.black);
+        g2d.setFont(new Font("Arial", Font.BOLD, 32));
+        g2d.drawString("Score: "+score, 10, 35);
+
+        if(state == GameState.MENU) drawMenu(g2d);
+        if(state == GameState.GAMEOVER) drawGameOver(g2d);
+    }
+
+    void drawMenu(Graphics g) {
+        g.setFont(new Font("Arial", Font.BOLD, 36));
+        String title = "FLAPPY BIRD";
+        g.drawString(title,(boardWidth-g.getFontMetrics().stringWidth(title))/2,150);
+        g.setFont(new Font("Arial", Font.BOLD, 24));
+        String start = "Press ENTER to Start";
+        g.drawString(start,(boardWidth-g.getFontMetrics().stringWidth(start))/2,300);
+    }
+
+    void drawGameOver(Graphics g) {
+        g.setFont(new Font("Arial", Font.BOLD, 48));
+        g.setColor(Color.red);
+        String title = "GAME OVER";
+        g.drawString(title,(boardWidth-g.getFontMetrics().stringWidth(title))/2,boardHeight/2);
+
+        g.setFont(new Font("Arial", Font.BOLD, 24));
+        g.setColor(Color.black);
+        String restart = "Press SPACE to Restart";
+        g.drawString(restart,(boardWidth-g.getFontMetrics().stringWidth(restart))/2,boardHeight/2+50);
+
+        String hs = "High Score: "+highScore;
+        g.drawString(hs,(boardWidth-g.getFontMetrics().stringWidth(hs))/2,boardHeight/2+90);
+    }
+
+    @Override
+    public void actionPerformed(ActionEvent e) {
+        if(state == GameState.RUNNING) updateGame();
+        repaint();
+    }
+
+    @Override
+    public void keyPressed(KeyEvent e) {
+        switch(state) {
+            case MENU:
+                if(e.getKeyCode() == KeyEvent.VK_ENTER) state = GameState.RUNNING;
+                break;
+            case RUNNING:
+                if(e.getKeyCode() == KeyEvent.VK_SPACE) {
+                    velocityY = jumpStrength;
+                    playSound(jumpSound);
+                }
+                break;
+            case GAMEOVER:
+                if(e.getKeyCode() == KeyEvent.VK_SPACE) {
+                    birdY = boardHeight/2;
+                    velocityY = 0;
+                    pipes.clear();
+                    particles.clear();
+                    score = 0;
+                    state = GameState.RUNNING;
+                }
+                break;
+        }
+    }
+
+    @Override public void keyReleased(KeyEvent e) {}
+    @Override public void keyTyped(KeyEvent e) {}
 }
